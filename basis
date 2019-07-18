@@ -1,0 +1,484 @@
+# TEXT MINING v1.1 ================================================================================
+# author: Lukasz Szymczyk
+# date: 2018-08-14
+# encoding: UTF-8
+# CONTENTS:
+#   0. packages
+#   1. web scraping
+#   2. preliminary analysis
+#   3. text preparing
+#   4. text analysis
+#   5. sentiment analysis
+#   6.
+# =================================================================================================
+# check: http://clip.ipipan.waw.pl/ 
+
+
+# 0. PRELIMINARY ==================================================================================
+
+# basic packages ----------------------------------------------------------------------------------
+
+library(dplyr)                         #  a grammar of data manipulation
+library(tidyr)                        
+library(stringi)
+
+library(ggplot2)
+library(RColorBrewer)
+
+library(rvest)
+
+library(tagcloud)
+library(tidytext)
+
+
+
+# 1. WEB SCRAPING =================================================================================
+
+
+# list of articles --------------------------------------------------------------------------------
+
+articles <- NULL                                                               # main table declaration 
+articles <- as.data.frame(articles)                                            #      (for 'cbind' purposes)
+articles_temp <- NULL                                                          # temporary table declaration 
+articles_temp <- as.data.frame(articles_temp)                                  #      (for 'cbind' purposes)
+
+I <- 100     # how many pages we load, each with 10 titles <==================== !!! PARAMETER
+
+for(i in 1:I){
+  
+  url <- paste('https://www.analizy.pl/fundusze/analizy/strona/',i,sep='')
+  session <- url %>%                                                           # opening the html session  
+    html_session                                                
+  content <- session %>%                                                       # scraping of the titles and abstracts
+    html_nodes('span')%>% 
+    html_text()                     
+  content <- content[3:22]                                                     # data cleaning
+  titles <- content[seq(from=1, to=20, by=2)]                                  # filtering - vector of titles
+  abstracts <- content[-seq(from=1, to=20, by=2)]                              # filtering - vector of abstracts
+  
+  urls <- session %>%                                                          # scraping of the urls
+    html_nodes('a') %>% 
+    html_attr('href')                    
+  urls <- urls[39:48]                                                          # data cleaning
+  urls <- paste('https://www.analizy.pl', urls, sep='')                        # vector of urls
+  
+  id <- c((((i-1)*10)+1):(i*10))                                               # ID - generation
+  id <- paste('ID',id, sep='')                                                 # vector of ID
+  
+  articles_temp <- cbind(id, titles, abstracts, urls)                          # data joining
+  colnames(articles_temp) <- c('ID', 'Tytul', 'Opis', 'Url')                   # column titles
+  articles <- rbind(articles, articles_temp)                                   # data union
+  
+  ps <- runif(1, min = 1.5, max = 4)                                           # pause length
+  Sys.sleep(ps)                                                                # pause to not overload the server
+  print(paste('page ',i,' of ', I,' was loaded (+',ps,'sec.)'))                # loop message
+  
+  rm(id, articles_temp, titles, abstracts, urls, session, url, content, ps)    # cleaning
+  
+}
+
+rm(i,I)                                                                        # cleaning
+
+articles$ID <- as.character(articles$ID)                                       # changing the data type to char
+articles$Tytul <- as.character(articles$Tytul)                                 # changing the data type to char
+articles$Opis <- as.character(articles$Opis)                                   # changing the data type to char
+articles$Url <- as.character(articles$Url)                                     # changing the data type to char
+
+
+# content of articles -----------------------------------------------------------------------------
+
+tags <- NULL                                                                   # tags table declaratio 
+tags <- as.data.frame(tags)                                                    #      (for 'cbind' purposes)
+Li <- length(articles$Url)                                                     # number of articles
+
+for(i in 201:300){
+  
+  url <- articles[i,4]                                                         # article url
+  url %>% html_session                                                         # opening the html session 
+  page <- read_html(url)                                                       # scraping of the full page
+  
+  tags_temp <- page %>%                                                        # scraping of the tags
+    html_node('span#selected_tags') %>% 
+    html_children()    
+  if(length(tags_temp)>0){                                                     # table of tags 
+    Lj <- length(tags_temp)
+    for (j in 1:Lj) {
+      tags[i,1] <- articles[i,1]
+      tags[i,j+1] <- tags_temp[j] %>% 
+        html_text()
+    }
+    rm(Lj, j, tags_temp)                                                       # cleaning
+  }else{
+    print(paste('no tags for article ',i))                                     # loop message
+  }
+  
+  articles[i,5] <- page %>%                                                    # joining the author to the main table
+    html_node('#art_full span') %>% 
+    html_text()        
+  
+  date_temp <- page %>%                                                        # scraping of the dates 
+    html_node('#art_full td') %>% 
+    html_text() %>% 
+    stri_trim()        
+  
+  if(date_temp == articles[i,5] | is.na(date_temp)){                           # joining the date to the main table
+    if(i == 1){
+      articles[i,6] <- 'no data'
+    }else{
+      articles[i,6] <- articles[i-1,6]
+    }
+  }else{
+    articles[i,6] <- stri_sub(date_temp, 1, 10)
+  }
+  
+  articles[i,7] <- page %>%                                                    # scraping of the content
+    html_node('#art_full .article_real_content') %>% 
+    html_text() %>% 
+    stri_trim()
+  articles[i,7] <- gsub('\n',' ', articles[i,7])                               # cleaning the content
+  articles[i,7] <- gsub('\t',' ', articles[i,7])
+  
+  t_begin <- stri_locate_first_fixed(articles[i,7],                            # removing the invitation to the newsletter
+                                     'Zapisz się na Newsletter')[1]            # WARNING -> encoding of Polish letters   
+  t_end <- stri_locate_first_fixed(articles[i,7], 
+                                   'TOP5 funduszy inwestycyjnych.')[2]
+  t_length <- t_end - t_begin + 1
+  if(!is.na(t_begin)){
+    stri_sub(articles[i,7], t_begin, length=t_length) <- '' 
+  }
+  print(paste('length(', i, ') = ', t_length, sep=''))
+  
+  t_length <- nchar(articles[i,5])                                            # removing author in content
+  t_end <- nchar(articles[i,7])
+  t_begin <- t_end - t_length + 1
+  comp <- stri_sub(articles[i,7], t_begin, length=t_length)
+  
+  
+  if(!is.na(articles[i,5]) & comp == articles[i,5]){
+    stri_sub(articles[i,7], t_begin, length=t_length) <- '' 
+  }  
+  
+  ps <- runif(1, min = 1.5, max = 4)                                           # pause length
+  Sys.sleep(ps)                                                                # pause to not overload the server
+  print(paste('article ',i,' of ', Li,' was loaded (+',ps,'sec.)'))            # loop message
+  rm(url, page, date_temp, t_begin, t_end, t_length, ps, comp)                 # cleaning
+}
+
+rm(i, Li)                                                                      # cleaning
+colnames(articles)[5:7] <- c('Autor', 'Data', 'Tresc')                         # column titles
+if(articles[1,6] == 'no data'){articles[1,6] <- articles[2,6]}
+
+articles_baclup <- articles
+articles <- articles[1:300,]
+
+
+# vector of tags ----------------------------------------------------------------------------------
+
+tags_vec <- NULL                                                               # tags vector declaration 
+tags_vec <- as.data.frame(tags_vec)                                            #      (for 'cbind' purposes)
+tt_length <- length(tags$V1)                                                   # number of articles
+
+for(i in 1:tt_length){
+  at_vec <- tags[i,-c(1)]                                                      # vector of tags for article i
+  at_ind <- !is.na(at_vec)                                                     # index of tags for article i (no NA)
+  at_vec <- at_vec[at_ind==TRUE]                                               # cleaning the data
+  tags_temp <- cbind(rep(articles[i,1],length(at_vec)),at_vec)                 # temporary vector of tags
+  tags_vec <- rbind(tags_vec,tags_temp)                                        # union with vector of tags
+  rm(at_vec,at_ind,tags_temp)                                                  # cleaning
+}
+
+rm(i,tt_length, tags)                                                          # cleaning
+colnames(tags_vec) <- c('ID', 'tag')
+
+
+
+# 2. PRELIMINARY ANALYSIS =========================================================================
+
+
+# statistics --------------------------------------------------------------------------------------
+
+articles$Data <- as.Date(articles$Data, "%d.%m.%Y")                            # setting date format
+min(articles$Data)                                                             # data from day
+max(articles$Data)                                                             # data until the day
+
+articles$Opis <- as.character(articles$Opis)                                   # setting abstract format
+articles$nOpis <- nchar(articles$Opis)                                         # adding length of abstract
+min(articles$nOpis, na.rm = TRUE)                                              # minimum length of abstract
+max(articles$nOpis, na.rm = TRUE)                                              # maximum length of abstract
+
+articles$Tresc <- as.character(articles$Tresc)                                 # setting content format
+articles$nTresc <- nchar(articles$Tresc)                                       # adding length of content
+min(articles$nTresc, na.rm = TRUE)                                             # minimum length of content
+max(articles$nTresc, na.rm = TRUE)                                             # maximum length of content
+
+
+# analysis in time --------------------------------------------------------------------------------
+
+articles$RM <- as.character(articles$Data)                                     # column with year and month
+L <-length(articles$RM)
+
+for(i in 1:L){                                                                 # formatting as 'YY-MM'
+  stri_sub(articles[i,'RM'], 8, length=3) <- ''
+  stri_sub(articles[i,'RM'], 1, length=2) <- ''
+}
+
+rm(i,L)                                                                        # cleaning
+
+articles$RM <- as.factor(articles$RM)                                          # formatting as factor
+
+artM <- articles %>%                                                          # number of articles in a given month
+  group_by(RM, Autor) %>% 
+  summarise(n = length(RM))
+artM <- artM[-c(1),]
+
+colors <- brewer.pal(7, "Paired")                                              # color palette
+
+ggplot(artM, 
+       aes(RM, n, fill = drv)) + 
+  geom_bar(stat = 'identity',
+           position = 'stack',
+           aes(fill = Autor)) +
+  scale_fill_manual(values = colors) +
+  theme(text = element_text(size = 7)) +
+  ggtitle('Liczba artykułów wg miesięcy') +
+  xlab('miesiąc (RR-MM)') +
+  ylab('liczba artykułów')
+
+rm(colors, artM)
+
+
+# cloud of tags -----------------------------------------------------------------------------------
+
+tags <- tags_vec %>% 
+  group_by(tag) %>% 
+  summarise(numb = length(tag)) %>%
+  as.data.frame() %>% 
+  arrange(desc(numb))
+  
+tags_cld <- tags[tags$numb > 4,]
+
+colors <- colorRampPalette(brewer.pal(12,'Paired'))(length(tags_cld$tag))
+
+tagcloud(tags_cld = tags_cld$tag,  
+         weights = tags_cld$numb,
+         col= colors)
+
+rm(tags_cld, tags_vec, colors)
+
+tags_tfi <- tags
+tags_tfi$tfi <- stri_locate_first_fixed(tags_tfi$tag, 'TFI')
+tags_tfi <- drop_na(tags_tfi)
+
+tags_tfi$tag <- as.character(tags_tfi$tag)
+L <- length(tags_tfi$tag)
+
+for(i in 1:L){
+  if(tags_tfi[i,3]==1){
+    stri_sub(tags_tfi[i,1], tags_tfi[i,3][1], length=4) <- ''
+  }else{
+    stri_sub(tags_tfi[i,1], tags_tfi[i,3][1]-1, length=4) <- ''
+  }
+}
+
+rm(L,i)
+tags_tfi$tfi <- NULL
+tags_tfi <- tags_tfi[tags_tfi$ta!='',]
+tags_tfi <- tags_tfi[tags_tfi$numb > 2,]
+
+colors <- colorRampPalette(brewer.pal(12,'Paired'))(length(tags_tfi$tag))
+
+tagcloud(tags = tags_tfi$tag,  
+         weights = tags_tfi$numb,
+         col= colors)
+
+rm(tags, tags_tfi, colors)
+
+
+# searching of article ------------------------
+
+key_words <- c('BZ WBK TFI',                                                       # key words
+           'BZ WBK',
+           'Fundusze Arka',
+           'Arka BZ WBK',
+           'Arka Prestiż',
+           'Arka',
+           'Santander')
+
+articles_tfi <- articles
+Lj <- length(lista)
+Li <- length(articles_tfi$Tresc)
+d <- dim(articles_tfi)[2]
+
+for(j in 1:Lj){
+  for(i in 1:Li){
+    if(is.na(stri_locate_first_fixed(articles_tfi[i,'Tresc'],key_words[j])[1])){articles_tfi[i,d+j] <- 0
+    }else{
+      articles_tfi[i,d+j] <- dim(stri_locate_all_fixed(articles_tfi[i,'Tresc'],key_words[j])[[1]])[1]
+    }
+  }
+}
+
+rm(i,j,Lj)
+
+colnames(articles_tfi)[-c(1:d)] <- key_words
+
+articles_tfi$'BZ WBK' <- articles_tfi$'BZ WBK' - 
+  articles_tfi$'BZ WBK TFI' - 
+  articles_tfi$'Arka BZ WBK'
+articles_tfi$Arka <- articles_tfi$'Arka' - 
+  articles_tfi$'Arka BZ WBK' - 
+  articles_tfi$'Arka Prestiż' - 
+  articles_tfi$'Fundusze Arka'
+articles_tfi$Score <- articles_tfi$'BZ WBK TFI' + 
+  articles_tfi$'BZ WBK' + 
+  articles_tfi$'Fundusze Arka' + 
+  articles_tfi$'Arka BZ WBK' + 
+  articles_tfi$'Arka Prestiż' + 
+  articles_tfi$'Arka' +
+  articles_tfi$'Santander'
+
+score <- dim(articles_tfi)[2]
+articles_tfi <- articles_tfi[c(1:d,score)]
+articles_tfi <- arrange(articles_tfi, desc(Score))
+articles_tfi <- articles_tfi[articles_tfi$Score>0,]
+
+rm(d, Li, i, S, key_words, score, articles_tfi)
+
+
+
+# 3. TEXT PREPARING =============================================================================== 
+
+
+# tokenization ------------------------------------------------------------------------------------
+
+titles <- articles[,c('ID','Tytul')]                                           # division titles into single words
+titles <- unnest_tokens(titles, words, Tytul, token = 'words')                 #      and converting capital letters to small ones
+
+abstract <- articles[,c('ID','Opis')]                                           # division titles into single words
+abstract <- unnest_tokens(abstract, words, Opis, token = 'words')                 #      and converting capital letters to small ones
+
+content <- articles[,c('ID','Tresc')]                                           # division titles into single words
+content <- unnest_tokens(content, words, Tresc, token = 'words')                 #      and converting capital letters to small ones
+
+
+# filtering: short words --------------------------------------------------------------------------
+titles <- filter(titles, nchar(words) >= 3)
+abstract <- filter(abstract, nchar(words) >= 3)
+content <- filter(content, nchar(words) >= 3)
+
+
+# filtering: numbers ------------------------------------------------------------------------------
+titles <- filter(titles, is.na(as.numeric(words)))
+abstract <- filter(abstract, is.na(as.numeric(words)))
+content <- filter(content, is.na(as.numeric(words)))
+
+
+# filtering: stopwords ----------------------------------------------------------------------------
+
+stop_words <- read.csv('https://raw.githubusercontent.com/MarcinKosinski/trigeR5/master/dicts/polish_stopwords.txt',
+                       header = FALSE,
+                       sep = ',',
+                       encoding = 'UTF-8')
+stop_words <- t(stop_words)
+L <- length(stop_words)
+for(i in 2:L){
+  stri_sub(stop_words[i], 1, length = 1) <- ''
+}
+rm(L,i)
+
+titles <- filter(titles, !words %in% stop_words)
+abstract <- filter(abstract, !words %in% stop_words)
+content <- filter(content, !words %in% stop_words)
+
+rm(stop_words)
+
+
+# steaming ----------------------------------------------------------------------------------------
+
+getwd()
+setwd('C:/Users/163119/Documents/PROJ/Text_Mining/')
+
+# source: https://github.com/MarcinKosinski/trigeR5/blob/master/dicts/polimorfologik-2.1.zip
+steam_dic <- read.csv('slowniki/polimorfologik/polimorfologik-2.1.txt',
+                      header = FALSE,
+                      sep = c(';', ':'),
+                      encoding = 'UTF-8',
+                      stringsAsFactors = FALSE)
+
+steam_dic[,3] <- gsub(x = steam_dic[,3],
+                  pattern = ":.*",
+                  replacement = '')
+
+colnames(steam_dic) <- c('steam', 'word', 'type')
+
+steam_dic[,1] <- tolower(steam_dic[,1])
+steam_dic[,2] <- tolower(steam_dic[,2])
+
+titles <- left_join(titles, steam_dic, by = c('words' = 'word'))
+abstract <- left_join(abstract, steam_dic, by = c('words' = 'word'))
+content <- left_join(content, steam_dic, by = c('words' = 'word'))
+
+rm(steam_dic)
+
+titles <- unique(titles)
+abstract <- unique(abstract)
+content <- unique(content)
+
+titles <- filter(titles, type %in% c('adj', 'subst', 'verb'))
+abstract <- filter(abstract, type %in% c('adj', 'subst', 'verb'))
+content <- filter(content, type %in% c('adj', 'subst', 'verb'))
+
+
+
+# 4. TEXT ANALYSIS ================================================================================
+
+
+# popular words -----------------------------------------------------------------------------------
+
+pop_words_titles <- count(titles, steam, sort = TRUE) %>% head(20)
+pop_words_abstract <- count(abstract, steam, sort = TRUE) %>% head(20)
+pop_words_content <- count(content, steam, sort = TRUE) %>% head(20)
+
+ggplot(pop_words_content) +
+  theme_bw() +
+  geom_bar(aes(steam, n),
+           stat = 'identity',
+           fill = 'skyblue3') +
+  coord_flip() +
+  scale_x_discrete(limits = pop_words_content$steam[order(pop_words_content$n,
+                                                          decreasing = FALSE)]) +
+  ggtitle('POPULARNE SŁOWA') +
+  xlab('') +
+  ylab('liczba wystąpień')
+
+rm(pop_words_titles, pop_words_abstract, pop_words_content)
+
+
+
+# 5. SENTIMENT ANALYSIS ===========================================================================
+
+
+# sentiment dictionary ----------------------------------------------------------------------------
+
+getwd()
+setwd('C:/Users/163119/Documents/PROJ/Text_Mining/')
+
+# source: http://exp.lobi.nencki.gov.pl/nawl-analysis
+# 'A' - anger
+# 'D' - disgust
+# 'F' - fear
+# 'H' - hapiness
+# 'N' - neutral
+# 'S' - sadness
+# 'U' - unclassified
+sentiment <- read.csv('slowniki/nawl/nawl-analysis.csv',
+                      encoding = 'UTF-8',
+                      stringsAsFactors = FALSE)
+
+titles <- left_join(titles, sentiment, by = c('steam' = 'word'))
+abstract <- left_join(abstract, sentiment, by = c('steam' = 'word'))
+content <- left_join(content, sentiment, by = c('steam' = 'word'))
+
+
+
+
