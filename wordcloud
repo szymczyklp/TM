@@ -1,0 +1,568 @@
+---
+title: "Analiza najczęściej występujących słów"
+output: 
+  html_document:
+    css: style.css
+    includes:
+        after_body: footer.html
+---
+ 
+```{r setup, echo = TRUE, warning = F, message = F}
+# ustawienie globalnych opcji dla chunk-ów ( echo - czy wyświetlać kod w dokumencie)
+knitr::opts_chunk$set(echo = TRUE, warning = F, message = F)
+library(dplyr) # do manipulacji danymi
+library(stringr) # do formatowania tekstu
+library(readr) # dla funkcji "read_csv"
+library(ggplot2) # do wykresów 
+library(tidytext) # dla funckji "unnest_tokens"
+library(wordcloud) # dla funkcji "wordcloud"
+library(tidyr) # dla funkcji "gather" i "separate"
+
+# słowniki z Polskimi stop words 
+stop_words_pl <- read.csv2("stop_words_pl.csv", stringsAsFactors = FALSE)
+stop_words_pl$STOPWORDSPL <- stop_words_pl$STOPWORDSPL %>% str_trim()
+```
+
+# Chmury słów opisujące szczególnych klientów {.tabset .tabset-fade .tabset-pills}
+***
+
+
+
+## Detraktor
+
+```{r chmura01, out.width = "1400px", out.height = "2400px"}
+library(readxl) # dla funkcji "read_excel"
+# są to komentarze dotyczące NPS
+dane <- read_excel("nps_komentarze_i_wybrane_cechy.xlsx")
+head(dane)
+
+dane <- filter(dane, !is.na(NPS1_1)) # usuwamy braki danych w odpowiedziach
+
+dane1 <- filter(dane, NPS == "DETRACTOR") # wybieramy tylko detraktorów
+
+
+dane_tekst <-  dane1$TNPS2_1 %>% # wybranie tylko wektora z komentarzami
+  
+  # podzielenie tekstu w miejscu kropek, potem po spacji i przecinku 
+  str_split("\\.") %>% unlist() %>% str_split(" |,") %>%
+  
+  # dla każdego zdania zastosowanie poniższej funkcji
+  lapply(., function(x) {str_to_lower(x) %>%
+      
+      # usuwanie wszystkich cyfr i znaków interpunkcyjnych
+      str_remove_all("[:digit:]|[:punct:]") %>%
+      #.[!str_detect(.,"dla|jak|mam|miałem|miałam|si|ale")] %>% 
+      #str_subset("..") %>%
+      
+      # usuwanie niepotrzebnych odstępów i połączenie słów w zdania
+      str_trim() %>% str_c(collapse = " ") %>% .[1]}) %>%
+  
+  # usunięcie zdań poniżej dwóch znaków i zapisanie nie data_frame
+  unlist() %>% str_subset("..") %>% as_tibble()
+
+# podzielenie zdań w tekście na bigramy
+ngram_2 <- unnest_tokens(dane_tekst, bigram, value, token = "ngrams", n = 2)
+  
+# rozdzielenie bigramów 
+ngram_2_separated <- ngram_2 %>%
+  separate(bigram, c("word1", "word2"), sep = " ")
+ 
+# usunięcie stop words-ów w każdej części bigramu
+ngram_2_filtered <- ngram_2_separated %>%
+  filter(!word1 %in% stop_words_pl$STOPWORDSPL) %>%
+  filter(!word2 %in% stop_words_pl$STOPWORDSPL) %>%
+  filter(!word1 %in% stop_words_pl$STOPWORDS) %>%
+  filter(!word2 %in% stop_words_pl$STOPWORDS)
+
+# połączenie wyczyszczonych słów
+ngram_2_filtered$all <- str_c(ngram_2_filtered$word1, ngram_2_filtered$word2, sep = " ")
+
+# policzenie częstości występowania słów i wybranie 100 najczęstszych 
+chmura_2 <- count(ngram_2_filtered, all) %>% top_n(100, n) %>% arrange(-n)
+head(chmura_2)
+
+# funkcja do chmury słów
+wordcloud(words = chmura_2$all, freq = chmura_2$n, scale = c(2.4,0.6),
+          colors = c(rep("red",20), rep("black", nrow(chmura_2)-20)),
+          max.words = 50, random.order = FALSE, ordered.colors = TRUE)
+```
+
+
+
+```{r tabela01}
+
+tmp <- vector()
+dane1$tag <- ""
+
+for(j in 1:nrow(dane1)){
+
+  for(i in 1:20){
+    # jeżeli w komentarzu występuje bigram przypisuje je jako tag
+    if(str_detect(str_to_lower(dane1$TNPS2_1[j]), chmura_2$all[i])){
+      tmp[i] <- chmura_2$all[i]
+    }else{
+      tmp[i] <- NA
+    }
+  }
+  # połączenie wszystkich tagów i dodatnie do ramki danych
+  dane1$tag[j] <- paste(na.omit(tmp), collapse = ";")
+}
+
+# rozdzielenie tagu 
+tmp_df <- dane1 %>% separate(tag, c("a","b","c","d","e","f","g","h","i"), sep = ";")
+
+# stworzenie tabeli długiej
+tmp_df2 <- tmp_df %>% gather("Tag", "jaki", c("a","b","c","d","e","f","g","h","i")) %>% 
+  filter(!is.na(jaki))
+
+# wybór odpowiednich zmiennych do wyświetlenia w tabeli
+tmp_df3 <- tmp_df2 %>% filter(jaki != "") %>% 
+  mutate(Slowo_tag = factor(jaki, levels = chmura_2$all[1:20]),
+         NPS_num = factor(NPS1_1),
+         NPS_char = factor(NPS),
+         Komentarz = TNPS2_1) %>% 
+  select(Slowo_tag, NPS_num, NPS_char, Komentarz)
+
+
+# stworzenie tabeli w html z możliwości filtrowania 
+tmp_df3 %>% DT::datatable(filter = 'top',  options = list(
+  pageLength = 10, autoWidth = TRUE
+))
+  
+```
+
+
+## Passive
+
+```{r chmura02, out.width = "1400px", out.height = "2400px", echo = FALSE, warning = F, message = F}
+knitr::opts_chunk$set(echo = FALSE, warning = F, message = F)
+library(readxl)
+dane <- read_excel("nps_komentarze_i_wybrane_cechy.xlsx")
+dane <- filter(dane, !is.na(NPS1_1))
+dane1 <- filter(dane, NPS == "PASSIVE")
+dane_tekst <-  dane1$TNPS2_1 %>%
+  str_split("\\.") %>% unlist() %>% str_split(" |,") %>%
+  lapply(., function(x) {str_to_lower(x) %>%
+      str_remove_all("[:digit:]|[:punct:]") %>%
+      #.[!str_detect(.,"dla|jak|mam|miałem|miałam|si|ale")] %>% 
+      #str_subset("..") %>%
+      str_trim() %>% str_c(collapse = " ") %>% .[1]}) %>%
+  unlist() %>% str_subset("..") %>% as_tibble()
+
+ngram_2 <- unnest_tokens(dane_tekst, bigram, value, token = "ngrams", n = 2)
+  
+ngram_2_separated <- ngram_2 %>%
+  separate(bigram, c("word1", "word2"), sep = " ")
+ 
+ngram_2_filtered <- ngram_2_separated %>%
+  filter(!word1 %in% stop_words_pl$STOPWORDSPL) %>%
+  filter(!word2 %in% stop_words_pl$STOPWORDSPL) %>%
+  filter(!word1 %in% stop_words_pl$STOPWORDS) %>%
+  filter(!word2 %in% stop_words_pl$STOPWORDS)
+
+ngram_2_filtered$all <- str_c(ngram_2_filtered$word1, ngram_2_filtered$word2, sep = " ")
+
+chmura_2 <- count(ngram_2_filtered, all) %>% top_n(100, n) %>% arrange(-n)
+wordcloud(chmura_2$all, chmura_2$n, c(2.4,.6), colors = c(rep("red",20), rep("black", nrow(chmura_2)-20)), max.words = 50, random.order = FALSE, ordered.colors = TRUE)
+```
+
+
+
+```{r tabela02}
+
+tmp <- vector()
+tag <- vector()
+dane1$tag <- ""
+for(j in 1:nrow(dane1)){
+  for(i in 1:20){
+    if(str_detect(str_to_lower(dane1$TNPS2_1[j]), chmura_2$all[i])){
+      tmp[i] <- chmura_2$all[i]
+    }else{
+      tmp[i] <- NA
+    }
+  }
+  dane1$tag[j] <- paste(na.omit(tmp), collapse = ";")
+}
+
+tmp_df <- dane1 %>% separate(tag, c("a","b","c","d","e","f","g","h","i"), sep = ";")
+tmp_df2 <- tmp_df %>% gather("Tag", "jaki", c("a","b","c","d","e","f","g","h","i")) %>% 
+  filter(!is.na(jaki))
+tmp_df3 <- tmp_df2 %>% filter(jaki != "") %>% 
+  mutate(Slowo_tag = factor(jaki, levels = chmura_2$all[1:20]),
+                              NPS_num = factor(NPS1_1),
+                              NPS_char = factor(NPS),
+                              Komentarz = TNPS2_1) %>% 
+  select(Slowo_tag, NPS_num, NPS_char, Komentarz)
+
+
+
+tmp_df3 %>% DT::datatable(filter = 'top',  options = list(
+  pageLength = 10, autoWidth = TRUE
+))
+  
+```
+
+
+
+## Promotor
+
+```{r chmura03, out.width = "1400px", out.height = "2400px"}
+library(readxl)
+dane <- read_excel("nps_komentarze_i_wybrane_cechy.xlsx")
+dane <- filter(dane, !is.na(NPS1_1))
+dane1 <- filter(dane, NPS == "PROMOTOR")
+dane_tekst <-  dane1$TNPS2_1 %>%
+  str_split("\\.") %>% unlist() %>% str_split(" |,") %>%
+  lapply(., function(x) {str_to_lower(x) %>%
+      str_remove_all("[:digit:]|[:punct:]") %>%
+      #.[!str_detect(.,"dla|jak|mam|miałem|miałam|si|ale")] %>% 
+      #str_subset("..") %>%
+      str_trim() %>% str_c(collapse = " ") %>% .[1]}) %>%
+  unlist() %>% str_subset("..") %>% as_tibble()
+
+ngram_2 <- unnest_tokens(dane_tekst, bigram, value, token = "ngrams", n = 2)
+  
+ngram_2_separated <- ngram_2 %>%
+  separate(bigram, c("word1", "word2"), sep = " ")
+ 
+ngram_2_filtered <- ngram_2_separated %>%
+  filter(!word1 %in% stop_words_pl$STOPWORDSPL) %>%
+  filter(!word2 %in% stop_words_pl$STOPWORDSPL) %>%
+  filter(!word1 %in% stop_words_pl$STOPWORDS) %>%
+  filter(!word2 %in% stop_words_pl$STOPWORDS)
+
+ngram_2_filtered$all <- str_c(ngram_2_filtered$word1, ngram_2_filtered$word2, sep = " ")
+
+chmura_2 <- count(ngram_2_filtered, all) %>% top_n(100, n) %>% arrange(-n)
+wordcloud(chmura_2$all, chmura_2$n, c(2.4,.6), colors = c(rep("red",20), rep("black", nrow(chmura_2)-20)), max.words = 50, random.order = FALSE, ordered.colors = TRUE)
+```
+
+
+
+```{r tabela03}
+
+tmp <- vector()
+tag <- vector()
+dane1$tag <- ""
+for(j in 1:nrow(dane1)){
+  for(i in 1:20){
+    if(str_detect(str_to_lower(dane1$TNPS2_1[j]), chmura_2$all[i])){
+      tmp[i] <- chmura_2$all[i]
+    }else{
+      tmp[i] <- NA
+    }
+  }
+  dane1$tag[j] <- paste(na.omit(tmp), collapse = ";")
+}
+
+tmp_df <- dane1 %>% separate(tag, c("a","b","c","d","e","f","g","h","i"), sep = ";")
+tmp_df2 <- tmp_df %>% gather("Tag", "jaki", c("a","b","c","d","e","f","g","h","i")) %>% 
+  filter(!is.na(jaki))
+tmp_df3 <- tmp_df2 %>% filter(jaki != "") %>% 
+  mutate(Slowo_tag = factor(jaki, levels = chmura_2$all[1:20]),
+                              NPS_num = factor(NPS1_1),
+                              NPS_char = factor(NPS),
+                              Komentarz = TNPS2_1) %>% 
+  select(Slowo_tag, NPS_num, NPS_char, Komentarz)
+
+
+
+tmp_df3 %>% DT::datatable(filter = 'top',  options = list(
+  pageLength = 10, autoWidth = TRUE
+))
+  
+```
+
+
+
+
+
+
+## Aktywni
+
+```{r chmura1, out.width = "1400px", out.height = "2400px"}
+library(readxl)
+dane <- read_excel("nps_komentarze_i_wybrane_cechy.xlsx")
+dane <- filter(dane, !is.na(NPS1_1))
+dane1 <- filter(dane, CUST_STATUS_MIS_CD_V == "A")
+dane_tekst <-  dane1$TNPS2_1 %>%
+  str_split("\\.") %>% unlist() %>% str_split(" |,") %>%
+  lapply(., function(x) {str_to_lower(x) %>%
+      str_remove_all("[:digit:]|[:punct:]") %>%
+      #.[!str_detect(.,"dla|jak|mam|miałem|miałam|si|ale")] %>% 
+      #str_subset("..") %>%
+      str_trim() %>% str_c(collapse = " ") %>% .[1]}) %>%
+  unlist() %>% str_subset("..") %>% as_tibble()
+
+ngram_2 <- unnest_tokens(dane_tekst, bigram, value, token = "ngrams", n = 2)
+  
+ngram_2_separated <- ngram_2 %>%
+  separate(bigram, c("word1", "word2"), sep = " ")
+ 
+ngram_2_filtered <- ngram_2_separated %>%
+  filter(!word1 %in% stop_words_pl$STOPWORDSPL) %>%
+  filter(!word2 %in% stop_words_pl$STOPWORDSPL) %>%
+  filter(!word1 %in% stop_words_pl$STOPWORDS) %>%
+  filter(!word2 %in% stop_words_pl$STOPWORDS)
+
+ngram_2_filtered$all <- str_c(ngram_2_filtered$word1, ngram_2_filtered$word2, sep = " ")
+
+chmura_2 <- count(ngram_2_filtered, all) %>% top_n(100, n) %>% arrange(-n)
+wordcloud(chmura_2$all, chmura_2$n, c(2.4,.6), colors = c(rep("red",20), rep("black", nrow(chmura_2)-20)), max.words = 50, random.order = FALSE, ordered.colors = TRUE)
+```
+
+
+
+```{r tabela1}
+
+tmp <- vector()
+tag <- vector()
+dane1$tag <- ""
+for(j in 1:nrow(dane1)){
+  for(i in 1:20){
+    if(str_detect(str_to_lower(dane1$TNPS2_1[j]), chmura_2$all[i])){
+      tmp[i] <- chmura_2$all[i]
+    }else{
+      tmp[i] <- NA
+    }
+  }
+  dane1$tag[j] <- paste(na.omit(tmp), collapse = ";")
+}
+
+tmp_df <- dane1 %>% separate(tag, c("a","b","c","d","e","f","g","h","i"), sep = ";")
+tmp_df2 <- tmp_df %>% gather("Tag", "jaki", c("a","b","c","d","e","f","g","h","i")) %>% 
+  filter(!is.na(jaki))
+tmp_df3 <- tmp_df2 %>% filter(jaki != "") %>% 
+  mutate(Slowo_tag = factor(jaki, levels = chmura_2$all[1:20]),
+                              NPS_num = factor(NPS1_1),
+                              NPS_char = factor(NPS),
+                              Komentarz = TNPS2_1) %>% 
+  select(Slowo_tag, NPS_num, NPS_char, Komentarz)
+
+
+
+tmp_df3 %>% DT::datatable(filter = 'top',  options = list(
+  pageLength = 10, autoWidth = TRUE
+))
+  
+```
+
+
+
+
+
+
+
+## Nieaktywni
+
+
+```{r chmura2, out.width = "1400px", out.height = "2400px"}
+library(readxl)
+dane <- read_excel("nps_komentarze_i_wybrane_cechy.xlsx")
+dane <- filter(dane, !is.na(NPS1_1))
+dane1 <- filter(dane, CUST_STATUS_MIS_CD_V != "A")
+dane_tekst <-  dane1$TNPS2_1 %>%
+  str_split("\\.") %>% unlist() %>% str_split(" |,") %>%
+  lapply(., function(x) {str_to_lower(x) %>%
+      str_remove_all("[:digit:]|[:punct:]") %>%
+      #.[!str_detect(.,"dla|jak|mam|miałem|miałam|si|ale")] %>% 
+      #str_subset("..") %>%
+      str_trim() %>% str_c(collapse = " ") %>% .[1]}) %>%
+  unlist() %>% str_subset("..") %>% as_tibble()
+
+ngram_2 <- unnest_tokens(dane_tekst, bigram, value, token = "ngrams", n = 2)
+  
+ngram_2_separated <- ngram_2 %>%
+  separate(bigram, c("word1", "word2"), sep = " ")
+
+ngram_2_filtered <- ngram_2_separated %>%
+  filter(!word1 %in% stop_words_pl$STOPWORDSPL) %>%
+  filter(!word2 %in% stop_words_pl$STOPWORDSPL) %>%
+  filter(!word1 %in% stop_words_pl$STOPWORDS) %>%
+  filter(!word2 %in% stop_words_pl$STOPWORDS)
+
+ngram_2_filtered$all <- str_c(ngram_2_filtered$word1, ngram_2_filtered$word2, sep = " ")
+
+chmura_2 <- count(ngram_2_filtered, all) %>% top_n(100, n) %>% arrange(-n)
+wordcloud(chmura_2$all, chmura_2$n, c(2.4,.6), colors = c(rep("red",10), rep("black", nrow(chmura_2)-10)), max.words = 50, random.order = FALSE, ordered.colors = TRUE)
+```
+
+
+
+```{r tabela2}
+
+tmp <- vector()
+tag <- vector()
+dane1$tag <- ""
+for(j in 1:nrow(dane1)){
+  for(i in 1:20){
+    if(str_detect(str_to_lower(dane1$TNPS2_1[j]), chmura_2$all[i])){
+      tmp[i] <- chmura_2$all[i]
+    }else{
+      tmp[i] <- NA
+    }
+  }
+  dane1$tag[j] <- paste(na.omit(tmp), collapse = ";")
+}
+
+tmp_df <- dane1 %>% separate(tag, c("a","b","c","d","e","f","g","h","i"), sep = ";")
+tmp_df2 <- tmp_df %>% gather("Tag", "jaki", c("a","b","c","d","e","f","g","h","i")) %>% 
+  filter(!is.na(jaki))
+tmp_df3 <- tmp_df2 %>% filter(jaki != "") %>% 
+  mutate(Slowo_tag = factor(jaki, levels = chmura_2$all[1:20]),
+                              NPS_num = factor(NPS1_1),
+                              NPS_char = factor(NPS),
+                              Komentarz = TNPS2_1) %>% 
+  select(Slowo_tag, NPS_num, NPS_char, Komentarz)
+
+
+
+tmp_df3 %>% DT::datatable(filter = 'top',  options = list(
+  pageLength = 10, autoWidth = TRUE
+))
+  
+```
+
+
+
+## Klienci wielobankowych
+
+```{r chmura3, out.width = "1400px", out.height = "2400px"}
+dane <- read_csv("~/1_Krystian_Chylinski/Analizy/NPS_analiza_chmury/tmp_export_nps.csv", locale = locale(encoding = "LATIN2"))
+
+dane1 <- filter(dane, !is.na(wylosowane_P4_2))
+dane_tekst <-  dane1$TNPS2_1 %>%
+  str_split("\\.") %>% unlist() %>% str_split(" |,") %>%
+  lapply(., function(x) {str_to_lower(x) %>%
+      str_remove_all("[:digit:]|[:punct:]") %>%
+      #.[!str_detect(.,"dla|jak|mam|miałem|miałam|si|ale")] %>% 
+      #str_subset("..") %>%
+      str_trim() %>% str_c(collapse = " ") %>% .[1]}) %>%
+  unlist() %>% str_subset("..") %>% as_tibble()
+
+ngram_2 <- unnest_tokens(dane_tekst, bigram, value, token = "ngrams", n = 2)
+  
+ngram_2_separated <- ngram_2 %>%
+  separate(bigram, c("word1", "word2"), sep = " ")
+
+ngram_2_filtered <- ngram_2_separated %>%
+  filter(!word1 %in% stop_words_pl$STOPWORDSPL) %>%
+  filter(!word2 %in% stop_words_pl$STOPWORDSPL) %>%
+  filter(!word1 %in% stop_words_pl$STOPWORDS) %>%
+  filter(!word2 %in% stop_words_pl$STOPWORDS)
+
+ngram_2_filtered$all <- str_c(ngram_2_filtered$word1, ngram_2_filtered$word2, sep = " ")
+
+chmura_2 <- count(ngram_2_filtered, all) %>% top_n(100, n) %>% arrange(-n)
+
+wordcloud(chmura_2$all, chmura_2$n, c(2.4,.6), colors = c(rep("red",10), rep("black", nrow(chmura_2)-10)), max.words = 50, random.order = FALSE, ordered.colors = TRUE)
+```
+
+
+
+```{r tabela3}
+
+tmp <- vector()
+tag <- vector()
+dane1$tag <- ""
+for(j in 1:nrow(dane1)){
+  for(i in 1:20){
+    if(str_detect(str_to_lower(dane1$TNPS2_1[j]), chmura_2$all[i])){
+      tmp[i] <- chmura_2$all[i]
+    }else{
+      tmp[i] <- NA
+    }
+  }
+  dane1$tag[j] <- paste(na.omit(tmp), collapse = ";")
+}
+
+tmp_df <- dane1 %>% separate(tag, c("a","b","c","d","e","f","g","h","i"), sep = ";")
+tmp_df2 <- tmp_df %>% gather("Tag", "jaki", c("a","b","c","d","e","f","g","h","i")) %>% 
+  filter(!is.na(jaki))
+tmp_df3 <- tmp_df2 %>% filter(jaki != "") %>% 
+  mutate(Slowo_tag = factor(jaki, levels = chmura_2$all[1:20]),
+                              NPS_num = factor(NPS1_1),
+                              NPS_char = factor(NPS),
+                              `Komentarz Santander` = TNPS2_1,
+                              `Komentarz inny` = TNPS2_2) %>% 
+  select(Slowo_tag, NPS_num, NPS_char, `Komentarz Santander`, `Komentarz inny`)
+
+
+
+tmp_df3 %>% DT::datatable(filter = 'top',  options = list(
+  pageLength = 10, autoWidth = TRUE
+)) 
+  
+```
+
+
+
+
+## Komentarze dotyczące innego banku
+
+```{r chmura4, out.width = "1400px", out.height = "2400px"}
+dane <- read_csv("~/1_Krystian_Chylinski/Analizy/NPS_analiza_chmury/tmp_export_nps.csv", locale = locale(encoding = "LATIN2"))
+
+dane1 <- filter(dane, !is.na(TNPS2_2))
+dane_tekst <-  dane1$TNPS2_1 %>%
+  str_split("\\.") %>% unlist() %>% str_split(" |,") %>%
+  lapply(., function(x) {str_to_lower(x) %>%
+      str_remove_all("[:digit:]|[:punct:]") %>%
+      #.[!str_detect(.,"dla|jak|mam|miałem|miałam|si|ale")] %>% 
+      #str_subset("..") %>%
+      str_trim() %>% str_c(collapse = " ") %>% .[1]}) %>%
+  unlist() %>% str_subset("..") %>% as_tibble()
+
+ngram_2 <- unnest_tokens(dane_tekst, bigram, value, token = "ngrams", n = 2)
+  
+ngram_2_separated <- ngram_2 %>%
+  separate(bigram, c("word1", "word2"), sep = " ")
+
+ngram_2_filtered <- ngram_2_separated %>%
+  filter(!word1 %in% stop_words_pl$STOPWORDSPL) %>%
+  filter(!word2 %in% stop_words_pl$STOPWORDSPL) %>%
+  filter(!word1 %in% stop_words_pl$STOPWORDS) %>%
+  filter(!word2 %in% stop_words_pl$STOPWORDS)
+
+ngram_2_filtered$all <- str_c(ngram_2_filtered$word1, ngram_2_filtered$word2, sep = " ")
+
+chmura_2 <- count(ngram_2_filtered, all) %>% top_n(100, n) %>% arrange(-n)
+wordcloud(chmura_2$all, chmura_2$n, c(2.4,.6), colors = c(rep("red",10), rep("black", nrow(chmura_2)-10)), max.words = 50, random.order = FALSE, ordered.colors = TRUE)
+```
+
+
+
+```{r tabela4}
+
+tmp <- vector()
+tag <- vector()
+dane1$tag <- ""
+for(j in 1:nrow(dane1)){
+  for(i in 1:20){
+    if(str_detect(str_to_lower(dane1$TNPS2_1[j]), chmura_2$all[i])){
+      tmp[i] <- chmura_2$all[i]
+    }else{
+      tmp[i] <- NA
+    }
+  }
+  dane1$tag[j] <- paste(na.omit(tmp), collapse = ";")
+}
+
+tmp_df <- dane1 %>% separate(tag, c("a","b","c","d","e","f","g","h","i"), sep = ";")
+tmp_df2 <- tmp_df %>% gather("Tag", "jaki", c("a","b","c","d","e","f","g","h","i")) %>% 
+  filter(!is.na(jaki))
+tmp_df3 <- tmp_df2 %>% filter(jaki != "") %>% 
+  mutate(Slowo_tag = factor(jaki, levels = chmura_2$all[1:20]),
+                              NPS_num = factor(NPS1_1),
+                              NPS_char = factor(NPS),
+                              `Komentarz Santander` = TNPS2_1,
+                              `Komentarz inny` = TNPS2_2) %>% 
+  select(Slowo_tag, NPS_num, NPS_char, `Komentarz Santander`, `Komentarz inny`)
+
+
+tmp_df3 %>% DT::datatable(filter = 'top',  options = list(
+  pageLength = 10, autoWidth = TRUE
+)) 
+  
+```
+
